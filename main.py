@@ -1,69 +1,38 @@
 import cv2
-import numpy as np
 import os
-from sklearn.neighbors import KNeighborsClassifier
-import matplotlib.pyplot as plt
 
 # Caminho para a pasta de imagens
 PASTA_IMAGENS = 'imagens'
 
-# Tamanho padrão das imagens (para normalizar)
+# Tamanho padrão das imagens (para normalização)
 TAMANHO_IMAGEM = (64, 64)
 
-# Rótulos
-rotulos = {'sim': 0, 'nao': 1, 'nao sei': 2}
-rotulos_inverso = {v: k for k, v in rotulos.items()}
-
-
-def carregar_imagem(path):
-    img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        raise FileNotFoundError(f"Imagem não encontrada: {path}")
-    img = cv2.resize(img, TAMANHO_IMAGEM)
-    return img.flatten()
-
-
-def mostrar_imagem(path):
-    img = cv2.imread(path)
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    plt.imshow(img_rgb)
-    plt.axis('off')
-    plt.show()
-
-
-def treinar_classificador():
-    imagens_treino = [
-        ('sim.png', 'sim'),
-        ('nao.png', 'nao'),
-        ('nao_sei.png', 'nao sei')
-    ]
-
-    X, y = [], []
-
-    for nome_arquivo, rotulo in imagens_treino:
+def carregar_imagens_referencia():
+    """Carrega todas as imagens da pasta e associa ao nome da classe"""
+    referencias = {}
+    for nome_arquivo in os.listdir(PASTA_IMAGENS):
         caminho = os.path.join(PASTA_IMAGENS, nome_arquivo)
-        vetor = carregar_imagem(caminho)
-        X.append(vetor)
-        y.append(rotulos[rotulo])
+        img = cv2.imread(caminho, cv2.IMREAD_GRAYSCALE)
+        if img is not None:
+            img = cv2.resize(img, TAMANHO_IMAGEM)
+            nome_classe = nome_arquivo.replace('.png', '').lower()
+            referencias[nome_classe] = img
+    return referencias
 
-    X = np.array(X)
-    y = np.array(y)
+def classificar_por_template(img_capturada, referencias):
+    """Compara a imagem capturada com todas as imagens de referência"""
+    melhores_resultados = {}
+    for nome, ref in referencias.items():
+        resultado = cv2.matchTemplate(img_capturada, ref, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, _ = cv2.minMaxLoc(resultado)
+        melhores_resultados[nome] = max_val
 
-    knn = KNeighborsClassifier(n_neighbors=1)
-    knn.fit(X, y)
-    return knn
+    melhor_classe = max(melhores_resultados, key=melhores_resultados.get)
+    return melhor_classe, melhores_resultados[melhor_classe]
 
-
-def classificar_imagem(classificador, nome_imagem_teste):
-    caminho = os.path.join(PASTA_IMAGENS, nome_imagem_teste)
-    mostrar_imagem(caminho)
-    vetor = carregar_imagem(caminho)
-    pred = classificador.predict([vetor])[0]
-    return rotulos_inverso[pred]
-
-
-def capturar_com_camera(classificador):
-    cap = cv2.VideoCapture(0)  # Usa a câmera padrão
+def capturar_com_camera_template():
+    referencias = carregar_imagens_referencia()
+    cap = cv2.VideoCapture(0)
 
     if not cap.isOpened():
         print("❌ Erro ao abrir a câmera.")
@@ -78,16 +47,13 @@ def capturar_com_camera(classificador):
             break
 
         cv2.imshow('Câmera', frame)
-
         tecla = cv2.waitKey(1) & 0xFF
 
         if tecla == ord('c'):
             imagem_cinza = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             imagem_redimensionada = cv2.resize(imagem_cinza, TAMANHO_IMAGEM)
-            vetor = imagem_redimensionada.flatten()
-            pred = classificador.predict([vetor])[0]
-            resultado = rotulos_inverso[pred]
-            print(f"🧠 Classificação: {resultado}")
+            classe, score = classificar_por_template(imagem_redimensionada, referencias)
+            print(f"🧠 Classificação: {classe} (confiança: {score:.2f})")
 
         elif tecla == ord('q'):
             break
@@ -95,18 +61,5 @@ def capturar_com_camera(classificador):
     cap.release()
     cv2.destroyAllWindows()
 
-
 if __name__ == '__main__':
-    knn = treinar_classificador()
-
-    modo = input("Digite 'c' para usar a câmera ou 'i' para classificar uma imagem: ").lower()
-
-    if modo == 'c':
-        capturar_com_camera(knn)
-    elif modo == 'i':
-        imagem_teste = input("Nome da imagem na pasta 'imagens/': ")
-        resultado = classificar_imagem(knn, imagem_teste)
-        print("📢 Resultado:")
-        print(f"A imagem representa: {resultado}")
-    else:
-        print("❗ Opção inválida.")
+    capturar_com_camera_template()
