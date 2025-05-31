@@ -17,11 +17,11 @@ mode_filename = 'pictogram_cnn_model.keras'
 
 def augment_data():
     datagen = ImageDataGenerator(
-        rotation_range=15,
-        width_shift_range=0.1,
-        height_shift_range=0.1,
-        shear_range=0.1,
-        zoom_range=0.1,
+        rotation_range=10,
+        width_shift_range=0.05,
+        height_shift_range=0.05,
+        shear_range=0.05,
+        zoom_range=0.05,
         horizontal_flip=True,
         fill_mode='nearest'
     )
@@ -85,19 +85,24 @@ def train_model():
         subset='validation'
     )
 
-    model = models.Sequential([
-        layers.Input(shape=(64, 64, 1)),
-        layers.Conv2D(32, (3, 3), activation='relu'),
-        layers.MaxPooling2D((2, 2)),
-        layers.Conv2D(64, (3, 3), activation='relu'),
-        layers.MaxPooling2D((2, 2)),
-        layers.Conv2D(128, (3, 3), activation='relu'),
-        layers.MaxPooling2D((2, 2)),
-        layers.Flatten(),
-        layers.Dense(128, activation='relu'),
-        layers.Dropout(0.5),
-        layers.Dense(train_generator.num_classes, activation='softmax')
-    ])
+    if os.path.exists(mode_filename):
+        print("Loading existing model for continued training...")
+        model = tf.keras.models.load_model(mode_filename)
+    else:
+        print("Creating new model...")
+        model = models.Sequential([
+            layers.Input(shape=(64, 64, 1)),
+            layers.Conv2D(32, (3, 3), activation='relu'),
+            layers.MaxPooling2D((2, 2)),
+            layers.Conv2D(64, (3, 3), activation='relu'),
+            layers.MaxPooling2D((2, 2)),
+            layers.Conv2D(128, (3, 3), activation='relu'),
+            layers.MaxPooling2D((2, 2)),
+            layers.Flatten(),
+            layers.Dense(128, activation='relu'),
+            layers.Dropout(0.5),
+            layers.Dense(train_generator.num_classes, activation='softmax')
+        ])
 
     model.compile(
         optimizer='adam',
@@ -143,8 +148,7 @@ def start_camera_prediction():
     class_names = load_class_names()
     print(f"Loaded classes: {class_names}")
 
-    # no meu pc: 0 para webcam, 1 para câmara do telemóvel ao usar Camo Studio
-    cap = cv2.VideoCapture(1)
+    cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error opening camera.")
         return
@@ -158,18 +162,37 @@ def start_camera_prediction():
             break
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = cv2.threshold(blurred, 100, 255, cv2.THRESH_BINARY_INV)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        gray = cv2.equalizeHist(gray)
 
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        edges = cv2.Canny(gray, 50, 150)
+
+        kernel = np.ones((5, 5), np.uint8)
+        dilated = cv2.dilate(edges, kernel, iterations=1)
+
+        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)
 
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
-            if w < 50 or h < 50:
+            area = cv2.contourArea(cnt)
+
+            if w < 30 or h < 30 or area < 1000:
                 continue
 
-            roi = gray[y:y+h, x:x+w]
-            resized = cv2.resize(roi, image_size)
+            roi = gray[y:y + h, x:x + w]
+
+            delta = abs(h - w)
+            top, bottom, left, right = 0, 0, 0, 0
+            if h > w:
+                left = delta // 2
+                right = delta - left
+            else:
+                top = delta // 2
+                bottom = delta - top
+            roi_square = cv2.copyMakeBorder(roi, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
+
+            resized = cv2.resize(roi_square, image_size)
             normalized = resized.astype('float32') / 255.0
             input_image = normalized.reshape(1, 64, 64, 1)
 
@@ -177,11 +200,13 @@ def start_camera_prediction():
             class_index = np.argmax(predictions)
             confidence = np.max(predictions)
 
-            if confidence > 0.8:
+            if confidence > 0.70:
                 label = class_names[class_index]
-                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
-                text = f"{label} ({confidence*100:.1f}%)"
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                text = f"{label} ({confidence * 100:.1f}%)"
                 cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+                cv2.imshow("ROI", resized)
 
         cv2.imshow('Pictogram Identification - Press Q to quit', frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
