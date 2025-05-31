@@ -7,21 +7,22 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 image_size = (64, 64)
 batch_size = 32
-epochs = 20
+epochs = 40
 images_folder = 'images'
 augmented_folder = 'augmentation_images'
-augmentation_per_image = 5
+augmentation_per_image = 30
 mode_filename = 'pictogram_cnn_model.keras'
 
 # === DATA AUGMENTATION ===
 
 def augment_data():
     datagen = ImageDataGenerator(
-        rotation_range=10,
-        width_shift_range=0.05,
-        height_shift_range=0.05,
-        shear_range=0.05,
-        zoom_range=0.05,
+        rotation_range=20,
+        width_shift_range=0.1,
+        height_shift_range=0.1,
+        shear_range=0.15,
+        zoom_range=0.2,
+        brightness_range=[0.7, 1.3],
         horizontal_flip=True,
         fill_mode='nearest'
     )
@@ -92,14 +93,21 @@ def train_model():
         print("Creating new model...")
         model = models.Sequential([
             layers.Input(shape=(64, 64, 1)),
-            layers.Conv2D(32, (3, 3), activation='relu'),
+
+            layers.Conv2D(32, (3, 3), padding='same', activation='relu'),
+            layers.BatchNormalization(),
             layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(64, (3, 3), activation='relu'),
+
+            layers.Conv2D(64, (3, 3), padding='same', activation='relu'),
+            layers.BatchNormalization(),
             layers.MaxPooling2D((2, 2)),
-            layers.Conv2D(128, (3, 3), activation='relu'),
+
+            layers.Conv2D(128, (3, 3), padding='same', activation='relu'),
+            layers.BatchNormalization(),
             layers.MaxPooling2D((2, 2)),
+
             layers.Flatten(),
-            layers.Dense(128, activation='relu'),
+            layers.Dense(256, activation='relu'),
             layers.Dropout(0.5),
             layers.Dense(train_generator.num_classes, activation='softmax')
         ])
