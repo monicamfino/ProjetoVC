@@ -41,7 +41,7 @@ def augment_data():
         img = cv2.resize(img, image_size)
         img = img.reshape((image_size[0], image_size[1], 1))
 
-        label = file_name.split('_')[0]
+        label = os.path.splitext(file_name)[0].split('_')[0]
         label_dir = os.path.join(augmented_folder, label)
         os.makedirs(label_dir, exist_ok=True)
 
@@ -153,7 +153,15 @@ def start_camera_prediction():
         print("Error opening camera.")
         return
 
-    print("Press 'q' to quit.")
+    print("Press 's' to start forming the sentence.")
+    print("Then use: 'q' to quit | 'c' to clear sentence | 'u' to undo last word")
+
+    sentence = []
+    last_label = None
+    cooldown_frames = 20
+    frame_counter = cooldown_frames
+    max_sentence_length = 15
+    forming_sentence = False
 
     while True:
         ret, frame = cap.read()
@@ -166,12 +174,13 @@ def start_camera_prediction():
         gray = cv2.equalizeHist(gray)
 
         edges = cv2.Canny(gray, 50, 150)
-
         kernel = np.ones((5, 5), np.uint8)
         dilated = cv2.dilate(edges, kernel, iterations=1)
 
         contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         contours = sorted(contours, key=cv2.contourArea, reverse=True)
+
+        found_this_frame = False
 
         for cnt in contours:
             x, y, w, h = cv2.boundingRect(cnt)
@@ -206,11 +215,47 @@ def start_camera_prediction():
                 text = f"{label} ({confidence * 100:.1f}%)"
                 cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
-                cv2.imshow("ROI", resized)
+                if forming_sentence:
+                    if (label != last_label or frame_counter >= cooldown_frames) and len(sentence) < max_sentence_length:
+                        sentence.append(label)
+                        last_label = label
+                        frame_counter = 0
+                        found_this_frame = True
 
-        cv2.imshow('Pictogram Identification - Press Q to quit', frame)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+                cv2.imshow("ROI", resized)
+                break
+
+        if not found_this_frame:
+            frame_counter += 1
+
+        displayed_sentence = sentence[-max_sentence_length:]
+        full_sentence = " ".join(displayed_sentence)
+        if len(sentence) > max_sentence_length:
+            full_sentence = "... " + full_sentence
+
+        header_text = f"Sentence: {full_sentence}" if forming_sentence else "Press 's' to start the sentence"
+        cv2.putText(frame, header_text, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+
+        cv2.imshow('Pictogram Identification - Q: quit | C: clear | U: undo | S: start', frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
             break
+        elif key == ord('c'):
+            sentence = []
+            last_label = None
+            frame_counter = cooldown_frames
+            print("Clear")
+        elif key == ord('u'):
+            if sentence:
+                removed = sentence.pop()
+                print(f"Last pictogram removed: {removed}")
+                last_label = sentence[-1] if sentence else None
+                frame_counter = cooldown_frames
+        elif key == ord('s'):
+            forming_sentence = True
+            print("Sentence started")
 
     cap.release()
     cv2.destroyAllWindows()
