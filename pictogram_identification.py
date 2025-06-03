@@ -146,6 +146,43 @@ def predict_from_frame(model, frame, class_names):
 
     return class_names[class_index], confidence
 
+def extract_pictogram_roi(frame):
+    """
+    Extrai apenas o ROI do pictograma mais proeminente na imagem.
+    """
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    # Threshold adaptativo para separar pictograma do fundo
+    thresh = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
+    )
+    # Encontrar contornos
+    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None, frame
+    # Selecionar o maior contorno (assumindo que é o pictograma)
+    cnt = max(contours, key=cv2.contourArea)
+    x, y, w, h = cv2.boundingRect(cnt)
+    area = cv2.contourArea(cnt)
+    # Ignorar contornos pequenos
+    if w < 30 or h < 30 or area < 1000:
+        return None, frame
+    # Recorte do ROI
+    roi = gray[y:y + h, x:x + w]
+    # Ajustar para quadrado
+    delta = abs(h - w)
+    top, bottom, left, right = 0, 0, 0, 0
+    if h > w:
+        left = delta // 2
+        right = delta - left
+    else:
+        top = delta // 2
+        bottom = delta - top
+    roi_square = cv2.copyMakeBorder(roi, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
+    # Desenhar retângulo no frame original para feedback visual
+    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
+    return roi_square, frame
+
 def start_camera_prediction():
     if not os.path.exists(mode_filename):
         print("Model not found. Train the model first.")
@@ -177,38 +214,11 @@ def start_camera_prediction():
             print("Error capturing frame.")
             break
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        gray = cv2.equalizeHist(gray)
-
-        edges = cv2.Canny(gray, 50, 150)
-        kernel = np.ones((5, 5), np.uint8)
-        dilated = cv2.dilate(edges, kernel, iterations=1)
-
-        contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
+        # --- NOVO: extrair apenas o pictograma ---
+        roi_square, frame_with_rect = extract_pictogram_roi(frame)
         found_this_frame = False
 
-        for cnt in contours:
-            x, y, w, h = cv2.boundingRect(cnt)
-            area = cv2.contourArea(cnt)
-
-            if w < 30 or h < 30 or area < 1000:
-                continue
-
-            roi = gray[y:y + h, x:x + w]
-
-            delta = abs(h - w)
-            top, bottom, left, right = 0, 0, 0, 0
-            if h > w:
-                left = delta // 2
-                right = delta - left
-            else:
-                top = delta // 2
-                bottom = delta - top
-            roi_square = cv2.copyMakeBorder(roi, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
-
+        if roi_square is not None:
             resized = cv2.resize(roi_square, image_size)
             normalized = resized.astype('float32') / 255.0
             input_image = normalized.reshape(1, 64, 64, 1)
@@ -219,9 +229,14 @@ def start_camera_prediction():
 
             if confidence > 0.70:
                 label = class_names[class_index]
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
                 text = f"{label} ({confidence * 100:.1f}%)"
-                cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                # Mostra label no topo do retângulo
+                x, y, w, h = cv2.boundingRect(max(cv2.findContours(cv2.adaptiveThreshold(
+                    cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0),
+                    255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
+                )[0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], key=cv2.contourArea)) #acaba aqui
+
+                cv2.putText(frame_with_rect, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                 if forming_sentence:
                     if (label != last_label or frame_counter >= cooldown_frames) and len(sentence) < max_sentence_length:
@@ -231,7 +246,6 @@ def start_camera_prediction():
                         found_this_frame = True
 
                 cv2.imshow("ROI", resized)
-                break
 
         if not found_this_frame:
             frame_counter += 1
@@ -242,10 +256,10 @@ def start_camera_prediction():
             full_sentence = "... " + full_sentence
 
         header_text = f"Sentence: {full_sentence}" if forming_sentence else "Press 's' to start the sentence"
-        cv2.putText(frame, header_text, (10, 30),
+        cv2.putText(frame_with_rect, header_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
 
-        cv2.imshow('Pictogram Identification - Q: quit | C: clear | U: undo | S: start', frame)
+        cv2.imshow('Pictogram Identification - Q: quit | C: clear | U: undo | S: start', frame_with_rect)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
@@ -273,21 +287,6 @@ def start_camera_prediction():
 
 if __name__ == '__main__':
     while True:
-        print("\nChoose a mode:")
-        print("[1] Data augmentation") # este devia sair e o programa fazer automaticamente
-        print("[2] Train model")
-        print("[3] Identify pictograms with camera")
-        print("[0] Quit")
-        choice = input("(0/1/2/3): ")
-
-        if choice == '1':
-            augment_data()
-        elif choice == '2':
-            train_model()
-        elif choice == '3':
-            start_camera_prediction()
-        elif choice == '0':
-            print("Quitting program...")
-            break
-        else:
-            print("Invalid option. Try again.")
+        augment_data()
+        train_model()
+        start_camera_prediction()
