@@ -130,61 +130,130 @@ def train_model():
     print(f"Model saved as '{mode_filename}'")
 
 
-# === PREDICTION WITH CAMERA ===
+# === PREDICTION WITH CAMERA (MULTIPLE PICTOGRAMS) ===
 
 def load_class_names():
     return sorted(entry.name for entry in os.scandir(augmented_folder) if entry.is_dir())
 
 
-def predict_from_frame(model, frame, class_names):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    resized = cv2.resize(gray, image_size)
-    normalized = resized.astype('float32') / 255.0
-    input_image = normalized.reshape(1, 64, 64, 1)
-
-    predictions = model.predict(input_image)
-    class_index = np.argmax(predictions)
-    confidence = np.max(predictions)
-
-    return class_names[class_index], confidence
-
-
-def extract_pictogram_roi(frame):
+def extract_multiple_pictogram_rois(frame):
     """
-    Extrai apenas o ROI do pictograma mais proeminente na imagem.
+    Extrai múltiplos ROIs de pictogramas na imagem.
+    Retorna uma lista de (roi, bbox) onde bbox = (x, y, w, h)
     """
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     blur = cv2.GaussianBlur(gray, (5, 5), 0)
-    # Threshold adaptativo para separar pictograma do fundo
+
+    # Threshold adaptativo para separar pictogramas do fundo
     thresh = cv2.adaptiveThreshold(
         blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
     )
+
     # Encontrar contornos
     contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    pictogram_rois = []
+
     if not contours:
-        return None, frame
-    # Selecionar o maior contorno (assumindo que é o pictograma)
-    cnt = max(contours, key=cv2.contourArea)
-    x, y, w, h = cv2.boundingRect(cnt)
-    area = cv2.contourArea(cnt)
-    # Ignorar contornos pequenos
-    if w < 30 or h < 30 or area < 1000:
-        return None, frame
-    # Recorte do ROI
-    roi = gray[y:y + h, x:x + w]
-    # Ajustar para quadrado
-    delta = abs(h - w)
-    top, bottom, left, right = 0, 0, 0, 0
-    if h > w:
-        left = delta // 2
-        right = delta - left
-    else:
-        top = delta // 2
-        bottom = delta - top
-    roi_square = cv2.copyMakeBorder(roi, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
-    # Desenhar retângulo no frame original para feedback visual
-    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
-    return roi_square, frame
+        return pictogram_rois
+
+    # Filtrar e processar contornos válidos
+    valid_contours = []
+    for cnt in contours:
+        x, y, w, h = cv2.boundingRect(cnt)
+        area = cv2.contourArea(cnt)
+
+        # Filtros para identificar pictogramas válidos
+        if (w >= 30 and h >= 30 and area >= 1000 and
+                0.3 <= w / h <= 3.0):  # Ratio de aspecto razoável
+            valid_contours.append((cnt, area, x, y, w, h))
+
+    # Ordenar por área (maiores primeiro)
+    valid_contours.sort(key=lambda x: x[1], reverse=True)
+
+    # Processar os contornos válidos (máximo 5 pictogramas)
+    for i, (cnt, area, x, y, w, h) in enumerate(valid_contours[:5]):
+        # Verificar se não há sobreposição significativa com contornos já processados
+        overlap = False
+        for existing_roi, existing_bbox in pictogram_rois:
+            ex, ey, ew, eh = existing_bbox
+            # Verificar sobreposição
+            if (x < ex + ew and x + w > ex and y < ey + eh and y + h > ey):
+                overlap_area = (min(x + w, ex + ew) - max(x, ex)) * (min(y + h, ey + eh) - max(y, ey))
+                if overlap_area > 0.3 * min(w * h, ew * eh):  # 30% de sobreposição
+                    overlap = True
+                    break
+
+        if overlap:
+            continue
+
+        # Recorte do ROI
+        roi = gray[y:y + h, x:x + w]
+
+        # Ajustar para quadrado
+        delta = abs(h - w)
+        top, bottom, left, right = 0, 0, 0, 0
+        if h > w:
+            left = delta // 2
+            right = delta - left
+        else:
+            top = delta // 2
+            bottom = delta - top
+
+        roi_square = cv2.copyMakeBorder(roi, top, bottom, left, right, cv2.BORDER_CONSTANT, value=255)
+
+        pictogram_rois.append((roi_square, (x, y, w, h)))
+
+    return pictogram_rois
+
+
+def predict_multiple_pictograms(model, frame, class_names):
+    """
+    Prediz múltiplos pictogramas numa imagem.
+    Retorna lista de (label, confidence, bbox)
+    """
+    pictogram_rois = extract_multiple_pictogram_rois(frame)
+    predictions = []
+
+    for roi_square, bbox in pictogram_rois:
+        # Redimensionar e normalizar
+        resized = cv2.resize(roi_square, image_size)
+        normalized = resized.astype('float32') / 255.0
+        input_image = normalized.reshape(1, 64, 64, 1)
+
+        # Fazer predição
+        prediction = model.predict(input_image, verbose=0)
+        class_index = np.argmax(prediction)
+        confidence = np.max(prediction)
+
+        if confidence > 0.70:  # Threshold de confiança
+            label = class_names[class_index]
+            predictions.append((label, confidence, bbox))
+
+    return predictions
+
+
+def capture_current_pictograms(predictions):
+    """
+    Captura as strings dos pictogramas detectados no momento atual
+    """
+    if not predictions:
+        print("❌ Nenhum pictograma detectado no momento!")
+        return []
+
+    captured_labels = []
+    print("=" * 50)
+
+    # Ordenar por posição (esquerda para direita)
+    sorted_predictions = sorted(predictions, key=lambda x: x[2][0])
+
+    for i, (label, confidence, bbox) in enumerate(sorted_predictions):
+        captured_labels.append(label)
+
+    print(f"FRASE FORMADA: {' '.join(captured_labels)}")
+    print("=" * 50 + "\n")
+
+    return captured_labels
 
 
 def start_camera_prediction():
@@ -202,15 +271,20 @@ def start_camera_prediction():
         print("Error opening camera.")
         return
 
-    print("Press 's' to start forming the sentence.")
-    print("Then use: 'q' to quit | 'c' to clear sentence | 'u' to undo last word")
+    print("\n" + "=" * 50)
+    print("DETECTOR DE PICTOGRAMAS")
+    print("=" * 50)
+    print("INSTRUÇÕES:")
+    print(" - Aponta os pictogramas para a câmara")
+    print(" - 'S' para detetar a frase")
+    print(" - 'Q' para sair")
+    print("=" * 50 + "\n")
 
-    sentence = []
-    last_label = None
-    cooldown_frames = 20
-    frame_counter = cooldown_frames
-    max_sentence_length = 15
-    forming_sentence = False
+    # Cores diferentes para cada pictograma detectado
+    colors = [(0, 255, 255), (255, 0, 255), (255, 255, 0), (0, 255, 0), (255, 0, 0)]
+
+    # Lista para armazenar todas as capturas realizadas
+    all_captures = []
 
     while True:
         ret, frame = cap.read()
@@ -218,91 +292,46 @@ def start_camera_prediction():
             print("Error capturing frame.")
             break
 
-        # --- CORREÇÃO: extrair apenas o pictograma ---
-        roi_square, frame_with_rect = extract_pictogram_roi(frame)
-        found_this_frame = False
+        # Detectar múltiplos pictogramas
+        predictions = predict_multiple_pictograms(model, frame, class_names)
 
-        if roi_square is not None:
-            resized = cv2.resize(roi_square, image_size)
-            normalized = resized.astype('float32') / 255.0
-            input_image = normalized.reshape(1, 64, 64, 1)
+        # Desenhar retângulos e labels para cada pictograma detectado
+        for i, (label, confidence, bbox) in enumerate(predictions):
+            x, y, w, h = bbox
+            color = colors[i % len(colors)]
 
-            predictions = model.predict(input_image, verbose=0)
-            class_index = np.argmax(predictions)
-            confidence = np.max(predictions)
+            # Desenhar retângulo
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 3)
 
-            if confidence > 0.70:
-                label = class_names[class_index]
-                text = f"{label} ({confidence * 100:.1f}%)"
+            # Texto com label e confiança
+            text = f"{label} ({confidence * 100:.1f}%)"
+            cv2.putText(frame, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-                # CORREÇÃO: Obter coordenadas do contorno já calculado na função extract_pictogram_roi
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                blur = cv2.GaussianBlur(gray, (5, 5), 0)
-                thresh = cv2.adaptiveThreshold(
-                    blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
-                )
-                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        # Mostrar instruções na tela
+        cv2.putText(frame, "Clica 'S' para capturar",
+                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
-                # Verificar se existem contornos antes de tentar encontrar o máximo
-                if contours:
-                    cnt = max(contours, key=cv2.contourArea)
-                    x, y, w, h = cv2.boundingRect(cnt)
-                    # Mostra label no topo do retângulo
-                    cv2.putText(frame_with_rect, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                else:
-                    # Se não há contornos, mostrar o texto no canto superior esquerdo
-                    cv2.putText(frame_with_rect, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+        # Mostrar total de capturas realizadas
+        capture_info = f"Capturas realizadas: {len(all_captures)}"
+        cv2.putText(frame, capture_info, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
 
-                if forming_sentence:
-                    if (label != last_label or frame_counter >= cooldown_frames) and len(
-                            sentence) < max_sentence_length:
-                        sentence.append(label)
-                        last_label = label
-                        frame_counter = 0
-                        found_this_frame = True
-
-                cv2.imshow("ROI", resized)
-
-        if not found_this_frame:
-            frame_counter += 1
-
-        displayed_sentence = sentence[-max_sentence_length:]
-        full_sentence = " ".join(displayed_sentence)
-        if len(sentence) > max_sentence_length:
-            full_sentence = "... " + full_sentence
-
-        header_text = f"Sentence: {full_sentence}" if forming_sentence else "Press 's' to start the sentence"
-        cv2.putText(frame_with_rect, header_text, (10, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
-
-        cv2.imshow('Pictogram Identification - Q: quit | C: clear | U: undo | S: start', frame_with_rect)
+        cv2.imshow('Detector de Pictogramas - S: Capturar | Q: Sair', frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key == ord('q'):
             break
-        elif key == ord('c'):
-            sentence = []
-            last_label = None
-            frame_counter = cooldown_frames
-            print("Clear")
-        elif key == ord('u'):
-            if sentence:
-                removed = sentence.pop()
-                print(f"Last pictogram removed: {removed}")
-                last_label = sentence[-1] if sentence else None
-                frame_counter = cooldown_frames
         elif key == ord('s'):
-            forming_sentence = True
-            print("Sentence started")
+            # CAPTURAR PICTOGRAMAS ATUAIS
+            captured = capture_current_pictograms(predictions)
+            if captured:
+                all_captures.append(captured)
 
     cap.release()
     cv2.destroyAllWindows()
 
-
 # === MAIN MENU ===
 
 if __name__ == '__main__':
-    while True:
-        #augment_data()
-        #train_model()
+        # augment_data()
+        # train_model()
         start_camera_prediction()
