@@ -286,6 +286,7 @@ def start_camera_prediction():
             capture_pictograms(predictions)
 
     cap.release()
+    print("=" * 50 + "\n")
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
@@ -293,4 +294,3 @@ if __name__ == '__main__':
         augment_data()
         train_model()
     start_camera_prediction()
-    print("=" * 50 + "\n")
