@@ -13,6 +13,7 @@ augmented_folder = 'augmentation_images'
 augmentation_per_image = 30
 mode_filename = 'pictogram_cnn_model.keras'
 
+
 # === DATA AUGMENTATION ===
 
 def augment_data():
@@ -66,7 +67,7 @@ def augment_data():
 # === CNN MODEL TRAINING ===
 
 def train_model():
-    datagen = ImageDataGenerator(rescale=1./255, validation_split=0.2)
+    datagen = ImageDataGenerator(rescale=1. / 255, validation_split=0.2)
 
     train_generator = datagen.flow_from_directory(
         augmented_folder,
@@ -134,6 +135,7 @@ def train_model():
 def load_class_names():
     return sorted(entry.name for entry in os.scandir(augmented_folder) if entry.is_dir())
 
+
 def predict_from_frame(model, frame, class_names):
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     resized = cv2.resize(gray, image_size)
@@ -145,6 +147,7 @@ def predict_from_frame(model, frame, class_names):
     confidence = np.max(predictions)
 
     return class_names[class_index], confidence
+
 
 def extract_pictogram_roi(frame):
     """
@@ -183,6 +186,7 @@ def extract_pictogram_roi(frame):
     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 255), 2)
     return roi_square, frame
 
+
 def start_camera_prediction():
     if not os.path.exists(mode_filename):
         print("Model not found. Train the model first.")
@@ -214,7 +218,7 @@ def start_camera_prediction():
             print("Error capturing frame.")
             break
 
-        # --- NOVO: extrair apenas o pictograma ---
+        # --- CORREÇÃO: extrair apenas o pictograma ---
         roi_square, frame_with_rect = extract_pictogram_roi(frame)
         found_this_frame = False
 
@@ -230,16 +234,28 @@ def start_camera_prediction():
             if confidence > 0.70:
                 label = class_names[class_index]
                 text = f"{label} ({confidence * 100:.1f}%)"
-                # Mostra label no topo do retângulo
-                x, y, w, h = cv2.boundingRect(max(cv2.findContours(cv2.adaptiveThreshold(
-                    cv2.GaussianBlur(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), (5, 5), 0),
-                    255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
-                )[0], cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0], key=cv2.contourArea)) #acaba aqui
 
-                cv2.putText(frame_with_rect, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                # CORREÇÃO: Obter coordenadas do contorno já calculado na função extract_pictogram_roi
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                blur = cv2.GaussianBlur(gray, (5, 5), 0)
+                thresh = cv2.adaptiveThreshold(
+                    blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY_INV, 31, 7
+                )
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+                # Verificar se existem contornos antes de tentar encontrar o máximo
+                if contours:
+                    cnt = max(contours, key=cv2.contourArea)
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    # Mostra label no topo do retângulo
+                    cv2.putText(frame_with_rect, text, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                else:
+                    # Se não há contornos, mostrar o texto no canto superior esquerdo
+                    cv2.putText(frame_with_rect, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 
                 if forming_sentence:
-                    if (label != last_label or frame_counter >= cooldown_frames) and len(sentence) < max_sentence_length:
+                    if (label != last_label or frame_counter >= cooldown_frames) and len(
+                            sentence) < max_sentence_length:
                         sentence.append(label)
                         last_label = label
                         frame_counter = 0
@@ -287,6 +303,6 @@ def start_camera_prediction():
 
 if __name__ == '__main__':
     while True:
-        augment_data()
-        train_model()
+        #augment_data()
+        #train_model()
         start_camera_prediction()
